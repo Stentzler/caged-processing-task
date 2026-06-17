@@ -1,0 +1,45 @@
+# Local AI / editor files
+.codex/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+sample/
+
+# Python packaging
+*.egg-info/
+dist/
+build/
+
+# Test and lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# UV cache
+.uv-cache/
+
+# AWS SAM
+.aws-sam/
+
+# Lambda build artifacts
+*.zip
+package/
+.lambda-build/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log

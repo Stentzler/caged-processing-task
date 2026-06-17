@@ -1,0 +1,26 @@
+[project]
+name = "caged-processing-task"
+version = "0.1.0"
+description = "Dockerized ECS Fargate task that processes grouped Novo CAGED archives."
+requires-python = ">=3.14"
+dependencies = [
+    "serverless-toolkit",
+]
+
+[tool.uv.sources]
+serverless-toolkit = { git = "https://github.com/Stentzler/caged-serverless-toolkit.git", tag = "v0.2.0" }
+
+[dependency-groups]
+dev = [
+    "ipdb",
+    "pre-commit>=4.0.0",
+    "pytest>=8.0.0",
+    "ruff>=0.11.0",
+]
+
+[tool.ruff]
+extend = "./config/ruff.toml"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

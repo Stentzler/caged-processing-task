@@ -1,0 +1,17 @@
+line-length = 88
+target-version = "py314"
+src = ["../src", "../tests"]
+
+[lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "B",
+    "UP",
+    "SIM",
+]
+
+[lint.isort]
+known-first-party = ["app"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
