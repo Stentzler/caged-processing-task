@@ -67,6 +67,29 @@ LOG_LEVEL=INFO
   - `process_id`
 - Continue processing complete months even if another month is incomplete.
 
+## Expected Output From This Process
+
+The processor writes aggregate items to `caged_geo_job_metrics`. Each item is
+keyed by one location, one reference month, and one CBO family profession code.
+
+The four main queryable result shapes are:
+
+| Result | PK example | SK example |
+| --- | --- | --- |
+| State total for a month | `LOC#STATE#35#MONTH#202604` | `PROF#ALL` |
+| City total for a month | `LOC#CITY#355030#MONTH#202604` | `PROF#ALL` |
+| State + profession for a month | `LOC#STATE#35#MONTH#202604` | `PROF#2237` |
+| City + profession for a month | `LOC#CITY#355030#MONTH#202604` | `PROF#2237` |
+
+For example, `PK=LOC#CITY#355030#MONTH#202604` and `SK=PROF#2237`
+represents one city's metrics for one profession family in one month. The item
+contains numeric fields such as `admissions`, `dismissals`, `net_balance`,
+`total_turnover`, `salary_sum`, `salary_count`, and `avg_salary`, plus
+denormalized labels like `location_name`, `state_name`, and `family_title`.
+
+Querying only the `PK` returns all profession-family rows for that
+city/state/month, including the `PROF#ALL` total row.
+
 ## Development
 
 ```bash
