@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Dockerized ECS Fargate task that processes grouped Novo CAGED archives."
 requires-python = ">=3.14"
 dependencies = [
+    "py7zr>=1.0.0",
     "serverless-toolkit",
 ]
 

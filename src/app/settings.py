@@ -21,6 +21,24 @@ class Settings:
             "caged_processes",
         )
     )
+    GEO_JOB_METRICS_TABLE_NAME: str = field(
+        default_factory=lambda: os.getenv(
+            "GEO_JOB_METRICS_TABLE_NAME",
+            "caged_geo_job_metrics",
+        )
+    )
+    CBO_LOOKUP_TABLE_NAME: str = field(
+        default_factory=lambda: os.getenv(
+            "CBO_LOOKUP_TABLE_NAME",
+            "caged_cbo_lookup",
+        )
+    )
+    GEO_LOOKUP_TABLE_NAME: str = field(
+        default_factory=lambda: os.getenv(
+            "GEO_LOOKUP_TABLE_NAME",
+            "caged_geo_lookup",
+        )
+    )
     PROCESSING_JOB_JSON: str = field(
         default_factory=lambda: os.getenv("PROCESSING_JOB_JSON", "")
     )
@@ -39,6 +57,15 @@ class Settings:
 
         if not self.PROCESS_AUDIT_TABLE_NAME.strip():
             raise ValueError("PROCESS_AUDIT_TABLE_NAME must be configured")
+
+        if not self.GEO_JOB_METRICS_TABLE_NAME.strip():
+            raise ValueError("GEO_JOB_METRICS_TABLE_NAME must be configured")
+
+        if not self.CBO_LOOKUP_TABLE_NAME.strip():
+            raise ValueError("CBO_LOOKUP_TABLE_NAME must be configured")
+
+        if not self.GEO_LOOKUP_TABLE_NAME.strip():
+            raise ValueError("GEO_LOOKUP_TABLE_NAME must be configured")
 
         if not self.PROCESSING_JOB_JSON.strip() and not self.PROCESSING_JOB_S3_URI:
             raise ValueError(

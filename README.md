@@ -5,9 +5,9 @@ files, groups them by `reference_month`, verifies the required trio
 `CAGEDMOV/CAGEDFOR/CAGEDEXC`, updates the downloaded-file registry, and writes
 one audit record per file into `caged_processes`.
 
-This phase stops before archive parsing. Complete months are marked as
-`processing`, incomplete months are marked as `error`, and the task returns a
-placeholder `"ok"` response.
+Complete months are parsed and aggregated into location/profession metrics,
+incomplete months are marked as `error`, and the task records one audit item per
+file.
 
 ## Job Input
 
@@ -41,6 +41,9 @@ Pass the downloaded batch payload through `PROCESSING_JOB_JSON` or
 REGISTRY_TABLE_NAME=downloaded_files_registry
 REGISTRY_ID=ftp_tree
 PROCESS_AUDIT_TABLE_NAME=caged_processes
+GEO_JOB_METRICS_TABLE_NAME=caged_geo_job_metrics
+CBO_LOOKUP_TABLE_NAME=caged_cbo_lookup
+GEO_LOOKUP_TABLE_NAME=caged_geo_lookup
 PROCESSING_JOB_JSON=
 PROCESSING_JOB_S3_URI=
 AWS_REGION=us-east-1
@@ -52,6 +55,9 @@ LOG_LEVEL=INFO
 - Group files by `reference_month`.
 - Require `CAGEDMOV`, `CAGEDFOR`, and `CAGEDEXC` for a month to be complete.
 - Generate one `process_id` UUID per file.
+- Parse complete monthly `CAGEDMOV`, `CAGEDFOR`, and `CAGEDEXC` groups.
+- Write city/state metrics by CBO family into `caged_geo_job_metrics`.
+- Write `PROF#ALL` total metrics for each city/state/month.
 - Update the existing `downloaded_files_registry` entry with:
   - `processing_status`
   - `process_id`

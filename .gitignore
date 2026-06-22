@@ -10,7 +10,6 @@ __pycache__/
 .venv/
 venv/
 env/
-sample/
 
 # Python packaging
 *.egg-info/
@@ -43,3 +42,5 @@ package/
 
 # Logs
 *.log
+
+sample

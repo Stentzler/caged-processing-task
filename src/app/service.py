@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import uuid4
 
 from app.exceptions import ProcessingFailedError
-from app.models import DownloadedFile, ProcessingJob, ProcessingMonth
+from app.models import DownloadedFile, ProcessingJob, ProcessingMonth, ProcessingResult
 from app.processor import ProcessingEngineProtocol
 from app.settings import Settings
+
+FINISHED_PROCESSING_STATUS = "finished"
+TERMINAL_PROCESSING_STATUSES = frozenset({FINISHED_PROCESSING_STATUS})
 
 
 class RegistryTableProtocol(Protocol):
@@ -25,6 +29,25 @@ class LoggerProtocol(Protocol):
     def info(self, message: str, *args: object, **kwargs: object) -> None: ...
 
     def exception(self, message: str, *args: object, **kwargs: object) -> None: ...
+
+
+@dataclass(frozen=True)
+class ProcessingFileResult:
+    source_file: DownloadedFile = field(repr=False, compare=False)
+    filename: str
+    file_type: str
+    process_id: str
+    processing_status: str
+
+
+@dataclass(frozen=True)
+class ProcessingMonthResult:
+    reference_month: str
+    reference_year: str
+    processing_status: str
+    missing_file_types: list[str]
+    files: list[ProcessingFileResult]
+    processor_result: ProcessingResult
 
 
 class ProcessingService:
@@ -50,11 +73,16 @@ class ProcessingService:
 
     def execute(self, event: object) -> dict[str, Any]:
         job = ProcessingJob.from_mapping(event)
+
         try:
             registry_tree = self._load_registry_tree()
+
+            grouped_months: list[ProcessingMonthResult] = [
+                self._group_month(month) for month in job.group_by_reference_month()
+            ]
+
             month_results = [
-                self._process_month(month, registry_tree)
-                for month in job.group_by_reference_month()
+                self._process_month(month, registry_tree) for month in grouped_months
             ]
         except ProcessingFailedError:
             self.logger.exception("Failed CAGED file pre-processing")
@@ -66,54 +94,93 @@ class ProcessingService:
         return {
             "status": "ok",
             "source_status": job.status,
-            "months": month_results,
+            "months": [serialize_month_result(month) for month in month_results],
         }
 
     def _process_month(
         self,
-        month: ProcessingMonth,
+        month_files: ProcessingMonthResult,
         registry_tree: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> ProcessingMonthResult:
+        if month_files.processing_status == "error":
+            for file_result in month_files.files:
+                self._write_audit_item(
+                    file=file_result.source_file,
+                    process_id=file_result.process_id,
+                    processing_status=file_result.processing_status,
+                    missing_file_types=month_files.missing_file_types,
+                )
+                self._update_registry_entry(
+                    file=file_result.source_file,
+                    process_id=file_result.process_id,
+                    processing_status=file_result.processing_status,
+                )
+            return month_files
+
+        registry_entries = [
+            self._get_registry_entry(registry_tree, file_result.source_file)
+            for file_result in month_files.files
+        ]
+
+        self._ensure_month_was_not_processed(month_files, registry_entries)
+
+        processor_result = self.processor.process(month_files)
+        finished_files = [
+            replace(file_result, processing_status=FINISHED_PROCESSING_STATUS)
+            for file_result in month_files.files
+        ]
+        for file_result in finished_files:
+            self._write_audit_item(
+                file=file_result.source_file,
+                process_id=file_result.process_id,
+                processing_status=file_result.processing_status,
+                missing_file_types=month_files.missing_file_types,
+            )
+            self._update_registry_entry(
+                file=file_result.source_file,
+                process_id=file_result.process_id,
+                processing_status=file_result.processing_status,
+            )
+        return replace(
+            month_files,
+            processing_status=FINISHED_PROCESSING_STATUS,
+            files=finished_files,
+            processor_result=processor_result,
+        )
+
+    def _group_month(
+        self,
+        month: ProcessingMonth,
+    ) -> ProcessingMonthResult:
         missing_file_types = month.missing_file_types
         month_status = "error" if missing_file_types else "processing"
-        file_results = []
+        file_results: list[ProcessingFileResult] = []
 
         for file in month.files:
             process_id = self.uuid_factory()
-            registry_entry = self._get_registry_entry(registry_tree, file)
-            self._update_registry_entry(file, process_id, month_status)
-            self._write_audit_item(
-                file=file,
-                process_id=process_id,
-                registry_entry=registry_entry,
-                processing_status=month_status,
-                missing_file_types=missing_file_types,
-            )
             file_results.append(
-                {
-                    "filename": file.filename,
-                    "file_type": file.file_type,
-                    "process_id": process_id,
-                    "processing_status": month_status,
-                }
+                ProcessingFileResult(
+                    source_file=file,
+                    filename=file.filename,
+                    file_type=file.file_type,
+                    process_id=process_id,
+                    processing_status=month_status,
+                )
             )
 
-        result = {"status": "ok", "details": {}}
-        if month.is_complete:
-            processor_result = self.processor.process(month)
-            result = {
-                "status": processor_result.status,
-                "details": processor_result.details,
-            }
+        result = ProcessingResult(
+            status="missing_files" if missing_file_types else "",
+            details={},
+        )
 
-        return {
-            "reference_month": month.reference_month,
-            "reference_year": month.reference_year,
-            "processing_status": month_status,
-            "missing_file_types": missing_file_types,
-            "files": file_results,
-            "processor_result": result,
-        }
+        return ProcessingMonthResult(
+            reference_month=month.reference_month,
+            reference_year=month.reference_year,
+            processing_status=month_status,
+            missing_file_types=missing_file_types,
+            files=file_results,
+            processor_result=result,
+        )
 
     def _load_registry_tree(self) -> dict[str, Any]:
         response = self.registry_table.get_item(
@@ -153,6 +220,24 @@ class ProcessingService:
             )
         return entry
 
+    def _ensure_month_was_not_processed(
+        self,
+        month: ProcessingMonthResult,
+        registry_entries: list[dict[str, Any]],
+    ) -> None:
+        processed_files = [
+            file_result.filename
+            for file_result, entry in zip(month.files, registry_entries, strict=True)
+            if str(entry.get("processing_status", "")).lower()
+            in TERMINAL_PROCESSING_STATUSES
+        ]
+        if processed_files:
+            files = ", ".join(processed_files)
+            raise ProcessingFailedError(
+                "CAGED month already has processed files: "
+                f"reference_month={month.reference_month} files={files}"
+            )
+
     def _update_registry_entry(
         self,
         file: DownloadedFile,
@@ -165,7 +250,7 @@ class ProcessingService:
             UpdateExpression=(
                 "SET "
                 "#tree.#year.#month.#filename.#processing_status = :processing_status, "
-                "#tree.#year.#month.#filename.#process_id = :process_id, "
+                "#tree.#year.#month.#filename.#last_process_id = :last_process_id, "
                 "#tree.#year.#month.#filename.#updated_at = :updated_at"
             ),
             ConditionExpression="attribute_exists(#tree.#year.#month.#filename)",
@@ -175,12 +260,12 @@ class ProcessingService:
                 "#month": file.reference_month,
                 "#filename": file.filename,
                 "#processing_status": "processing_status",
-                "#process_id": "process_id",
+                "#last_process_id": "last_process_id",
                 "#updated_at": "updated_at",
             },
             ExpressionAttributeValues={
                 ":processing_status": processing_status,
-                ":process_id": process_id,
+                ":last_process_id": process_id,
                 ":updated_at": timestamp,
             },
         )
@@ -190,7 +275,6 @@ class ProcessingService:
         *,
         file: DownloadedFile,
         process_id: str,
-        registry_entry: dict[str, Any],
         processing_status: str,
         missing_file_types: list[str],
     ) -> None:
@@ -202,11 +286,8 @@ class ProcessingService:
             "filename": file.filename,
             "file_type": file.file_type,
             "status": processing_status,
-            "source_status": file.status,
-            "registry_status": registry_entry.get("status"),
             "s3_bucket": file.s3_bucket,
             "s3_key": file.s3_key,
-            "s3_uri": file.s3_uri,
             "size_bytes": file.size_bytes,
             "created_at": timestamp,
             "updated_at": timestamp,
@@ -225,3 +306,25 @@ def current_utc_timestamp() -> str:
 
 def current_uuid() -> str:
     return str(uuid4())
+
+
+def serialize_month_result(month: ProcessingMonthResult) -> dict[str, Any]:
+    return {
+        "reference_month": month.reference_month,
+        "reference_year": month.reference_year,
+        "processing_status": month.processing_status,
+        "missing_file_types": month.missing_file_types,
+        "files": [
+            {
+                "filename": file.filename,
+                "file_type": file.file_type,
+                "process_id": file.process_id,
+                "processing_status": file.processing_status,
+            }
+            for file in month.files
+        ],
+        "processor_result": {
+            "status": month.processor_result.status,
+            "details": month.processor_result.details,
+        },
+    }

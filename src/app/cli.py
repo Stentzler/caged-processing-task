@@ -12,7 +12,7 @@ from serverless_toolkit.aws.s3 import (
 from serverless_toolkit.observability.logger import get_logger
 
 from app.exceptions import InvalidProcessingJobError
-from app.processor import NoOpProcessor
+from app.processor import CagedProcessor
 from app.service import ProcessingService
 from app.settings import Settings
 
@@ -36,6 +36,18 @@ def main() -> int:
         settings.PROCESS_AUDIT_TABLE_NAME,
         dynamodb_settings,
     )
+    geo_job_metrics_table = get_dynamodb_table(
+        settings.GEO_JOB_METRICS_TABLE_NAME,
+        dynamodb_settings,
+    )
+    cbo_lookup_table = get_dynamodb_table(
+        settings.CBO_LOOKUP_TABLE_NAME,
+        dynamodb_settings,
+    )
+    geo_lookup_table = get_dynamodb_table(
+        settings.GEO_LOOKUP_TABLE_NAME,
+        dynamodb_settings,
+    )
 
     try:
         event = load_event(settings, s3_client)
@@ -43,7 +55,13 @@ def main() -> int:
             settings=settings,
             registry_table=registry_table,
             audit_table=audit_table,
-            processor=NoOpProcessor(),
+            processor=CagedProcessor(
+                s3_client=s3_client,
+                geo_job_metrics_table=geo_job_metrics_table,
+                cbo_lookup_table=cbo_lookup_table,
+                geo_lookup_table=geo_lookup_table,
+                logger=logger,
+            ),
             logger=logger,
         )
         result = service.execute(event)

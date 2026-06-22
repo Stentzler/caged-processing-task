@@ -126,26 +126,26 @@ def test_execute_marks_processing_and_writes_audit_records() -> None:
             {
                 "reference_month": "202604",
                 "reference_year": "2026",
-                "processing_status": "processing",
+                "processing_status": "finished",
                 "missing_file_types": [],
                 "files": [
                     {
                         "filename": "CAGEDEXC202604.7z",
                         "file_type": "CAGEDEXC",
                         "process_id": "uuid-1",
-                        "processing_status": "processing",
+                        "processing_status": "finished",
                     },
                     {
                         "filename": "CAGEDFOR202604.7z",
                         "file_type": "CAGEDFOR",
                         "process_id": "uuid-2",
-                        "processing_status": "processing",
+                        "processing_status": "finished",
                     },
                     {
                         "filename": "CAGEDMOV202604.7z",
                         "file_type": "CAGEDMOV",
                         "process_id": "uuid-3",
-                        "processing_status": "processing",
+                        "processing_status": "finished",
                     },
                 ],
                 "processor_result": {
@@ -158,11 +158,11 @@ def test_execute_marks_processing_and_writes_audit_records() -> None:
     assert len(registry_table.get_calls) == 1
     assert len(registry_table.update_calls) == 3
     assert all(
-        call["ExpressionAttributeValues"][":processing_status"] == "processing"
+        call["ExpressionAttributeValues"][":processing_status"] == "finished"
         for call in registry_table.update_calls
     )
     assert [
-        call["ExpressionAttributeValues"][":process_id"]
+        call["ExpressionAttributeValues"][":last_process_id"]
         for call in registry_table.update_calls
     ] == ["uuid-1", "uuid-2", "uuid-3"]
     assert len(audit_table.put_calls) == 3
@@ -219,7 +219,7 @@ def test_execute_marks_incomplete_month_as_error_and_continues() -> None:
 
     assert [month["processing_status"] for month in response["months"]] == [
         "error",
-        "processing",
+        "finished",
     ]
     assert response["months"][0]["missing_file_types"] == ["CAGEDMOV"]
     assert response["months"][1]["missing_file_types"] == []
@@ -227,7 +227,7 @@ def test_execute_marks_incomplete_month_as_error_and_continues() -> None:
     assert [
         call["ExpressionAttributeValues"][":processing_status"]
         for call in registry_table.update_calls
-    ] == ["error", "error", "processing", "processing", "processing"]
+    ] == ["error", "error", "finished", "finished", "finished"]
     assert audit_table.put_calls[0]["Item"]["status"] == "error"
     assert audit_table.put_calls[0]["Item"]["missing_file_types"] == ["CAGEDMOV"]
 
@@ -239,6 +239,19 @@ def test_execute_raises_when_processor_fails() -> None:
 
     with pytest.raises(ProcessingFailedError):
         service.execute(VALID_JOB)
+
+
+def test_execute_raises_when_registry_entry_is_already_processed() -> None:
+    service, registry_table, audit_table, processor = build_service()
+    registry_table.item["Item"]["tree"]["2026"]["202604"]["CAGEDMOV202604.7z"][
+        "processing_status"
+    ] = "finished"
+
+    with pytest.raises(ProcessingFailedError, match="already has processed files"):
+        service.execute(VALID_JOB)
+
+    assert processor.months == []
+    assert audit_table.put_calls == []
 
 
 def test_execute_raises_when_registry_file_entry_is_missing() -> None:
