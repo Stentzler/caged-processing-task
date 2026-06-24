@@ -1,0 +1,5 @@
+competênciamov;região;uf;município;seção;subclasse;saldomovimentação;cbo2002ocupação;categoria;graudeinstrução;idade;horascontratuais;raçacor;sexo;tipoempregador;tipoestabelecimento;tipomovimentação;tipodedeficiência;indtrabintermitente;indtrabparcial;salário;tamestabjan;indicadoraprendiz;origemdainformação;competênciadec;competênciaexc;indicadordeexclusão;indicadordeforadoprazo;unidadesaláriocódigo;valorsaláriofixo
+202601;3;35;355030;A;111302;1;622020;101;7;39;44,00;3;1;0;1;97;0;0;0;1000,00;5;0;1;202601;202602;1;0;5;1000,00
+202601;4;42;420540;A;111302;-1;622020;101;7;40;44,00;3;1;0;1;31;0;0;0;2000,00;5;0;1;202601;202602;1;0;5;2000,00
+202601;2;27;270840;A;111302;1;622020;101;7;41;44,00;3;1;0;1;97;0;0;0;1000,00;5;0;1;202601;202602;1;0;5;1000,00
+202601;2;27;270840;A;111302;-1;622020;101;7;42;44,00;3;1;0;1;31;0;0;0;2000,00;5;0;1;202601;202602;1;0;5;2000,00

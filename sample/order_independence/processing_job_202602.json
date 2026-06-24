@@ -1,0 +1,35 @@
+{
+  "status": "COMPLETED",
+  "files": [
+    {
+      "status": "downloaded",
+      "filename": "CAGEDEXC202602.txt",
+      "reference_month": "202602",
+      "reference_year": "2026",
+      "s3_bucket": "local-order-independence",
+      "s3_key": "raw/caged/year=2026/month=02/file_type=exclusion/CAGEDEXC202602.txt",
+      "s3_uri": "s3://local-order-independence/raw/caged/year=2026/month=02/file_type=exclusion/CAGEDEXC202602.txt",
+      "size_bytes": 890
+    },
+    {
+      "status": "downloaded",
+      "filename": "CAGEDFOR202602.txt",
+      "reference_month": "202602",
+      "reference_year": "2026",
+      "s3_bucket": "local-order-independence",
+      "s3_key": "raw/caged/year=2026/month=02/file_type=late_movement/CAGEDFOR202602.txt",
+      "s3_uri": "s3://local-order-independence/raw/caged/year=2026/month=02/file_type=late_movement/CAGEDFOR202602.txt",
+      "size_bytes": 713
+    },
+    {
+      "status": "downloaded",
+      "filename": "CAGEDMOV202602.txt",
+      "reference_month": "202602",
+      "reference_year": "2026",
+      "s3_bucket": "local-order-independence",
+      "s3_key": "raw/caged/year=2026/month=02/file_type=movement/CAGEDMOV202602.txt",
+      "s3_uri": "s3://local-order-independence/raw/caged/year=2026/month=02/file_type=movement/CAGEDMOV202602.txt",
+      "size_bytes": 1022
+    }
+  ]
+}

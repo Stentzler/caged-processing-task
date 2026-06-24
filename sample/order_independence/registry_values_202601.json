@@ -1,0 +1,45 @@
+{
+  ":month": {
+    "M": {
+      "CAGEDEXC202601.txt": {
+        "M": {
+          "s3_url": {
+            "S": "s3://local-order-independence/raw/caged/year=2026/month=01/file_type=exclusion/CAGEDEXC202601.txt"
+          },
+          "status": {
+            "S": "downloaded"
+          },
+          "processing_status": {
+            "S": "pending"
+          }
+        }
+      },
+      "CAGEDFOR202601.txt": {
+        "M": {
+          "s3_url": {
+            "S": "s3://local-order-independence/raw/caged/year=2026/month=01/file_type=late_movement/CAGEDFOR202601.txt"
+          },
+          "status": {
+            "S": "downloaded"
+          },
+          "processing_status": {
+            "S": "pending"
+          }
+        }
+      },
+      "CAGEDMOV202601.txt": {
+        "M": {
+          "s3_url": {
+            "S": "s3://local-order-independence/raw/caged/year=2026/month=01/file_type=movement/CAGEDMOV202601.txt"
+          },
+          "status": {
+            "S": "downloaded"
+          },
+          "processing_status": {
+            "S": "pending"
+          }
+        }
+      }
+    }
+  }
+}
