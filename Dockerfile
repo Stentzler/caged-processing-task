@@ -1,10 +1,8 @@
-FROM python:3.14-slim AS build-base
+FROM python:3.14-alpine AS build-base
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /uvx /bin/
 
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates git \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ca-certificates git
 
 WORKDIR /app
 
@@ -23,7 +21,7 @@ FROM test AS builder
 
 RUN uv sync --locked --no-dev --no-editable
 
-FROM python:3.14-slim
+FROM python:3.14-alpine
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
