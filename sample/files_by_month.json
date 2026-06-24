@@ -1,0 +1,53 @@
+[
+  {
+    "reference_month": "202603",
+    "reference_year": "2026",
+    "processing_status": "error",
+    "missing_file_types": [
+      "CAGEDEXC",
+      "CAGEDFOR"
+    ],
+    "files": [
+      {
+        "filename": "CAGEDMOV202603.7z",
+        "file_type": "CAGEDMOV",
+        "process_id": "9e11d609-de1e-4361-8547-952d31eadf3f",
+        "processing_status": "error"
+      }
+    ],
+    "processor_result": {
+      "status": "ok",
+      "details": {}
+    }
+  },
+  {
+    "reference_month": "202604",
+    "reference_year": "2026",
+    "processing_status": "processing",
+    "missing_file_types": [],
+    "files": [
+      {
+        "filename": "CAGEDEXC202604.7z",
+        "file_type": "CAGEDEXC",
+        "process_id": "c0fcae8d-ee71-4de9-8787-96ae4f6ee0db",
+        "processing_status": "processing"
+      },
+      {
+        "filename": "CAGEDFOR202604.7z",
+        "file_type": "CAGEDFOR",
+        "process_id": "86c74ddb-7746-499a-82e5-c2122967cc24",
+        "processing_status": "processing"
+      },
+      {
+        "filename": "CAGEDMOV202604.7z",
+        "file_type": "CAGEDMOV",
+        "process_id": "d4d9125c-563a-4790-9e63-153d5de78598",
+        "processing_status": "processing"
+      }
+    ],
+    "processor_result": {
+      "status": "ok",
+      "details": {}
+    }
+  }
+]

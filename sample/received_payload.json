@@ -1,0 +1,35 @@
+{
+  "status": "COMPLETED",
+  "files": [
+    {
+      "status": "downloaded",
+      "filename": "CAGEDEXC202604.7z",
+      "reference_month": "202604",
+      "reference_year": "2026",
+      "s3_bucket": "caged-test-downloaded-files",
+      "s3_key": "raw/caged/year=2026/month=04/file_type=exclusion/CAGEDEXC202604.7z",
+      "s3_uri": "s3://caged-test-downloaded-files/raw/caged/year=2026/month=04/file_type=exclusion/CAGEDEXC202604.7z",
+      "size_bytes": 140967
+    },
+    {
+      "status": "downloaded",
+      "filename": "CAGEDFOR202604.7z",
+      "reference_month": "202604",
+      "reference_year": "2026",
+      "s3_bucket": "caged-test-downloaded-files",
+      "s3_key": "raw/caged/year=2026/month=04/file_type=late_movement/CAGEDFOR202604.7z",
+      "s3_uri": "s3://caged-test-downloaded-files/raw/caged/year=2026/month=04/file_type=late_movement/CAGEDFOR202604.7z",
+      "size_bytes": 783837
+    },
+    {
+      "status": "downloaded",
+      "filename": "CAGEDMOV202604.7z",
+      "reference_month": "202604",
+      "reference_year": "2026",
+      "s3_bucket": "caged-test-downloaded-files",
+      "s3_key": "raw/caged/year=2026/month=04/file_type=movement/CAGEDMOV202604.7z",
+      "s3_uri": "s3://caged-test-downloaded-files/raw/caged/year=2026/month=04/file_type=movement/CAGEDMOV202604.7z",
+      "size_bytes": 54955632
+    }
+  ]
+}
