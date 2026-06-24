@@ -42,6 +42,8 @@ REGISTRY_TABLE_NAME=downloaded_files_registry
 REGISTRY_ID=ftp_tree
 PROCESS_AUDIT_TABLE_NAME=caged_processes
 GEO_JOB_METRICS_TABLE_NAME=caged_geo_job_metrics
+METRIC_BATCHES_TABLE_NAME=caged_metric_batches
+METRIC_REVISIONS_TABLE_NAME=caged_metric_revisions
 CBO_LOOKUP_TABLE_NAME=caged_cbo_lookup
 GEO_LOOKUP_TABLE_NAME=caged_geo_lookup
 PROCESSING_JOB_JSON=
@@ -56,8 +58,10 @@ LOG_LEVEL=INFO
 - Require `CAGEDMOV`, `CAGEDFOR`, and `CAGEDEXC` for a month to be complete.
 - Generate one `process_id` UUID per file.
 - Parse complete monthly `CAGEDMOV`, `CAGEDFOR`, and `CAGEDEXC` groups.
-- Write city/state metrics by CBO family into `caged_geo_job_metrics`.
+- Store and apply current-month metrics through `caged_metric_batches`.
+- Write final city/state metrics by CBO family into `caged_geo_job_metrics`.
 - Write `PROF#ALL` total metrics for each city/state/month.
+- Store and apply historical-month corrections through `caged_metric_revisions`.
 - Update the existing `downloaded_files_registry` entry with:
   - `processing_status`
   - `process_id`
@@ -89,6 +93,12 @@ denormalized labels like `location_name`, `state_name`, and `family_title`.
 
 Querying only the `PK` returns all profession-family rows for that
 city/state/month, including the `PROF#ALL` total row.
+
+Rows whose `competênciamov` matches the processed file month are stored first in
+`caged_metric_batches`. Rows whose `competênciamov` is different from the
+processed file month are stored first in `caged_metric_revisions`. The processor
+then applies pending records to the metric table and marks each source record as
+`applied` in the same DynamoDB transaction.
 
 ## Development
 

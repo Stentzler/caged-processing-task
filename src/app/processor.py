@@ -4,13 +4,16 @@ import csv
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from itertools import batched
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import TYPE_CHECKING, Any, Protocol, TextIO
 
 from boto3.s3.transfer import TransferConfig
+from botocore.exceptions import ClientError
 
 from app.models import ProcessingResult
 
@@ -24,6 +27,9 @@ ALL_FAMILY_CODE = "ALL"
 ALL_FAMILY_TITLE = "All professions"
 UNKNOWN_LABEL = "UNKNOWN"
 MONEY_QUANTIZER = Decimal("0.01")
+METRICS_PER_TRANSACTION = 50
+BATCH_GET_MAX_ATTEMPTS = 4
+BATCH_GET_BASE_DELAY_SECONDS = 0.05
 S3_DOWNLOAD_CONFIG = TransferConfig(
     max_concurrency=2,
     num_download_attempts=10,
@@ -57,8 +63,45 @@ class DynamoDBBatchWriterProtocol(Protocol):
     def put_item(self, **kwargs: object) -> dict[str, Any]: ...
 
 
+class DynamoDBClientProtocol(Protocol):
+    def batch_get_item(self, **kwargs: object) -> dict[str, Any]: ...
+
+    def transact_write_items(self, **kwargs: object) -> dict[str, Any]: ...
+
+
+class DynamoDBTableMetaProtocol(Protocol):
+    client: DynamoDBClientProtocol
+
+
 class DynamoDBMetricsTableProtocol(Protocol):
+    name: str
+    meta: DynamoDBTableMetaProtocol
+
     def batch_writer(self) -> DynamoDBBatchWriterProtocol: ...
+
+    def get_item(self, **kwargs: object) -> dict[str, Any]: ...
+
+    def put_item(self, **kwargs: object) -> dict[str, Any]: ...
+
+
+class DynamoDBRevisionTableProtocol(Protocol):
+    name: str
+    meta: DynamoDBTableMetaProtocol
+
+    def put_item(self, **kwargs: object) -> dict[str, Any]: ...
+
+    def query(self, **kwargs: object) -> dict[str, Any]: ...
+
+    def update_item(self, **kwargs: object) -> dict[str, Any]: ...
+
+
+class DynamoDBMetricBatchTableProtocol(Protocol):
+    name: str
+    meta: DynamoDBTableMetaProtocol
+
+    def put_item(self, **kwargs: object) -> dict[str, Any]: ...
+
+    def query(self, **kwargs: object) -> dict[str, Any]: ...
 
 
 class LoggerProtocol(Protocol):
@@ -109,6 +152,12 @@ class MetricAggregate:
         if movement == DISMISSAL_MOVEMENT:
             self.dismissals += multiplier
 
+    def merge(self, other: MetricAggregate) -> None:
+        self.admissions += other.admissions
+        self.dismissals += other.dismissals
+        self.salary_sum += other.salary_sum
+        self.salary_count += other.salary_count
+
     @property
     def net_balance(self) -> int:
         return self.admissions - self.dismissals
@@ -137,7 +186,14 @@ class ProcessingStats:
     parsed_rows_by_file_type: dict[str, int]
     missing_cbo_codes: set[str]
     missing_geo_codes: set[str]
-    written_geo_job_metrics: int = 0
+    new_metric_batches: int = 0
+    skipped_metric_batches: int = 0
+    applied_metric_batches: int = 0
+    merged_metric_batches: int = 0
+    new_metric_revisions: int = 0
+    skipped_metric_revisions: int = 0
+    applied_metric_revisions: int = 0
+    merged_metric_revisions: int = 0
 
     @classmethod
     def empty(cls) -> ProcessingStats:
@@ -156,7 +212,14 @@ class ProcessingStats:
             "parsed_rows_by_file_type": self.parsed_rows_by_file_type,
             "missing_cbo_lookup_count": len(self.missing_cbo_codes),
             "missing_geo_lookup_count": len(self.missing_geo_codes),
-            "written_geo_job_metrics": self.written_geo_job_metrics,
+            "new_metric_batches": self.new_metric_batches,
+            "skipped_metric_batches": self.skipped_metric_batches,
+            "applied_metric_batches": self.applied_metric_batches,
+            "merged_metric_batches": self.merged_metric_batches,
+            "new_metric_revisions": self.new_metric_revisions,
+            "skipped_metric_revisions": self.skipped_metric_revisions,
+            "applied_metric_revisions": self.applied_metric_revisions,
+            "merged_metric_revisions": self.merged_metric_revisions,
         }
 
 
@@ -165,12 +228,16 @@ class CagedProcessor:
         self,
         s3_client: S3ObjectDownloader,
         geo_job_metrics_table: DynamoDBMetricsTableProtocol,
+        metric_batches_table: DynamoDBMetricBatchTableProtocol,
+        metric_revisions_table: DynamoDBRevisionTableProtocol,
         cbo_lookup_table: DynamoDBLookupTableProtocol,
         geo_lookup_table: DynamoDBLookupTableProtocol,
         logger: LoggerProtocol,
     ) -> None:
         self.s3_client = s3_client
         self.geo_job_metrics_table = geo_job_metrics_table
+        self.metric_batches_table = metric_batches_table
+        self.metric_revisions_table = metric_revisions_table
         self.cbo_lookup_table = cbo_lookup_table
         self.geo_lookup_table = geo_lookup_table
         self.logger = logger
@@ -182,7 +249,7 @@ class CagedProcessor:
     def process(self, month: ProcessingMonthResult) -> ProcessingResult:
         with TemporaryDirectory() as temporary_directory:
             local_files = self._download_files(month, Path(temporary_directory))
-            details = self._process_files(local_files)
+            details = self._process_files(local_files, month.reference_month)
 
         return ProcessingResult(
             status="ok",
@@ -194,7 +261,11 @@ class CagedProcessor:
             },
         )
 
-    def _process_files(self, files: list[LocalCagedFile]) -> dict[str, Any]:
+    def _process_files(
+        self,
+        files: list[LocalCagedFile],
+        source_month: str,
+    ) -> dict[str, Any]:
         files_by_type = self._index_files_by_type(files)
         aggregates: dict[MetricKey, MetricAggregate] = {}
         stats = ProcessingStats.empty()
@@ -218,18 +289,52 @@ class CagedProcessor:
                 stats.parsed_rows_by_file_type[file_type],
             )
 
-        metric_items = [
-            self._build_metric_item(key, aggregate)
+        metric_batch_items = [
+            self._build_metric_batch_item(source_month, key, aggregate)
             for key, aggregate in aggregates.items()
+            if key.reference_month == source_month
         ]
-
-        self.logger.info("Writing CAGED metric items: count=%s", len(metric_items))
-        self._write_metric_items(metric_items)
         self.logger.info(
-            "Finished writing CAGED metric items: count=%s",
-            len(metric_items),
+            "Writing CAGED metric batch items: count=%s",
+            len(metric_batch_items),
         )
-        stats.written_geo_job_metrics = len(metric_items)
+
+        self._write_metric_batch_items(metric_batch_items, stats)
+        self.logger.info(
+            "Finished writing CAGED metric batch items: created=%s skipped=%s",
+            stats.new_metric_batches,
+            stats.skipped_metric_batches,
+        )
+
+        self._apply_pending_metric_batch_items(source_month, stats)
+        self.logger.info(
+            "Finished applying CAGED metric batch items: applied=%s merged=%s",
+            stats.applied_metric_batches,
+            stats.merged_metric_batches,
+        )
+
+        revision_items = [
+            self._build_revision_item(source_month, key, aggregate)
+            for key, aggregate in aggregates.items()
+            if key.reference_month != source_month
+        ]
+        self.logger.info(
+            "Writing CAGED metric revision items: count=%s",
+            len(revision_items),
+        )
+        self._write_revision_items(revision_items, stats)
+        self.logger.info(
+            "Finished writing CAGED metric revision items: created=%s skipped=%s",
+            stats.new_metric_revisions,
+            stats.skipped_metric_revisions,
+        )
+
+        self._apply_pending_revision_items(source_month, stats)
+        self.logger.info(
+            "Finished applying CAGED metric revision items: applied=%s merged=%s",
+            stats.applied_metric_revisions,
+            stats.merged_metric_revisions,
+        )
         return stats.as_details()
 
     def _index_files_by_type(
@@ -354,14 +459,15 @@ class CagedProcessor:
         cbo_code: str,
         stats: ProcessingStats,
     ) -> ProfessionInfo:
-        family_code = cbo_code[:4]
+        normalized_cbo_code = cbo_code.zfill(6)
+        family_code = normalized_cbo_code[:4]
         cached = self._profession_cache.get(family_code)
         if cached is not None:
             return cached
 
         item = self._get_cbo_lookup_item(family_code)
         if item is None:
-            item = self._get_cbo_lookup_item(cbo_code)
+            item = self._get_cbo_lookup_item(normalized_cbo_code)
 
         if isinstance(item, dict):
             family_code = str(item.get("family_code") or family_code)
@@ -372,10 +478,10 @@ class CagedProcessor:
             )
         else:
             profession = ProfessionInfo(
-                family_code=cbo_code[:4],
+                family_code=family_code,
                 family_title=UNKNOWN_LABEL,
             )
-            self._warn_missing_cbo_family(cbo_code[:4], cbo_code, stats)
+            self._warn_missing_cbo_family(family_code, normalized_cbo_code, stats)
 
         self._profession_cache[profession.family_code] = profession
         return profession
@@ -532,10 +638,353 @@ class CagedProcessor:
             ),
         }
 
-    def _write_metric_items(self, items: Iterable[dict[str, object]]) -> None:
-        with self.geo_job_metrics_table.batch_writer() as batch:
-            for item in items:
-                batch.put_item(Item=item)
+    def _build_revision_item(
+        self,
+        source_month: str,
+        key: MetricKey,
+        aggregate: MetricAggregate,
+    ) -> dict[str, object]:
+        metric_item = self._build_metric_item(key, aggregate)
+        created_at = utc_now_iso()
+        return {
+            "PK": f"REVISION_BATCH#{source_month}",
+            "SK": f"METRIC#{metric_item['PK']}#{metric_item['SK']}",
+            "source_month": source_month,
+            "target_month": key.reference_month,
+            "metric_pk": metric_item["PK"],
+            "metric_sk": metric_item["SK"],
+            "location_type": key.location.location_type,
+            "location_code": key.location.location_code,
+            "location_name": key.location.location_name,
+            "state_code": key.location.state_code,
+            "state_name": key.location.state_name,
+            "region_name": key.location.region_name,
+            "family_code": key.family_code,
+            "family_title": key.family_title,
+            "admissions_delta": aggregate.admissions,
+            "dismissals_delta": aggregate.dismissals,
+            "salary_sum_delta": aggregate.salary_sum.quantize(MONEY_QUANTIZER),
+            "salary_count_delta": aggregate.salary_count,
+            "status": "pending",
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+
+    def _build_metric_batch_item(
+        self,
+        source_month: str,
+        key: MetricKey,
+        aggregate: MetricAggregate,
+    ) -> dict[str, object]:
+        metric_item = self._build_metric_item(key, aggregate)
+        created_at = utc_now_iso()
+        return {
+            "PK": f"BATCH#{source_month}",
+            "SK": f"METRIC#{metric_item['PK']}#{metric_item['SK']}",
+            "source_month": source_month,
+            "target_month": key.reference_month,
+            "metric_pk": metric_item["PK"],
+            "metric_sk": metric_item["SK"],
+            "location_type": key.location.location_type,
+            "location_code": key.location.location_code,
+            "location_name": key.location.location_name,
+            "state_code": key.location.state_code,
+            "state_name": key.location.state_name,
+            "region_name": key.location.region_name,
+            "family_code": key.family_code,
+            "family_title": key.family_title,
+            "admissions_delta": aggregate.admissions,
+            "dismissals_delta": aggregate.dismissals,
+            "salary_sum_delta": aggregate.salary_sum.quantize(MONEY_QUANTIZER),
+            "salary_count_delta": aggregate.salary_count,
+            "status": "pending",
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+
+    def _write_metric_batch_items(
+        self,
+        items: Iterable[dict[str, object]],
+        stats: ProcessingStats,
+    ) -> None:
+        for item in items:
+            try:
+                self.metric_batches_table.put_item(
+                    Item=item,
+                    ConditionExpression=(
+                        "attribute_not_exists(PK) AND attribute_not_exists(SK)"
+                    ),
+                )
+                stats.new_metric_batches += 1
+            except ClientError as error:
+                if is_conditional_check_failure(error):
+                    stats.skipped_metric_batches += 1
+                    continue
+                raise
+
+    def _apply_pending_metric_batch_items(
+        self,
+        source_month: str,
+        stats: ProcessingStats,
+    ) -> None:
+        batch_pk = f"BATCH#{source_month}"
+        applied_count, merged_count = self._apply_pending_metric_delta_items(
+            source_table=self.metric_batches_table,
+            partition_key=batch_pk,
+        )
+        stats.applied_metric_batches += applied_count
+        stats.merged_metric_batches += merged_count
+
+    def _write_revision_items(
+        self,
+        items: Iterable[dict[str, object]],
+        stats: ProcessingStats,
+    ) -> None:
+        for item in items:
+            try:
+                self.metric_revisions_table.put_item(
+                    Item=item,
+                    ConditionExpression=(
+                        "attribute_not_exists(PK) AND attribute_not_exists(SK)"
+                    ),
+                )
+                stats.new_metric_revisions += 1
+            except ClientError as error:
+                if is_conditional_check_failure(error):
+                    stats.skipped_metric_revisions += 1
+                    continue
+                raise
+
+    def _apply_pending_revision_items(
+        self,
+        source_month: str,
+        stats: ProcessingStats,
+    ) -> None:
+        revision_batch_pk = f"REVISION_BATCH#{source_month}"
+        applied_count, merged_count = self._apply_pending_metric_delta_items(
+            source_table=self.metric_revisions_table,
+            partition_key=revision_batch_pk,
+        )
+        stats.applied_metric_revisions += applied_count
+        stats.merged_metric_revisions += merged_count
+
+    def _apply_pending_metric_delta_items(
+        self,
+        *,
+        source_table: DynamoDBMetricBatchTableProtocol | DynamoDBRevisionTableProtocol,
+        partition_key: str,
+    ) -> tuple[int, int]:
+        pending_items = (
+            item
+            for item in self._query_metric_delta_items(source_table, partition_key)
+            if item.get("status") != "applied"
+        )
+        applied_count = 0
+        merged_count = 0
+
+        for item_batch in batched(
+            pending_items,
+            METRICS_PER_TRANSACTION,
+            strict=False,
+        ):
+            self.logger.debug(
+                "Applying CAGED metric delta batch: partition_key=%s item_count=%s",
+                partition_key,
+                len(item_batch),
+            )
+            merged_count += self._apply_metric_delta_batch(
+                source_table=source_table,
+                delta_items=item_batch,
+            )
+            applied_count += len(item_batch)
+
+        return applied_count, merged_count
+
+    def _query_metric_delta_items(
+        self,
+        table: DynamoDBMetricBatchTableProtocol | DynamoDBRevisionTableProtocol,
+        partition_key: str,
+    ) -> Iterator[dict[str, Any]]:
+        query_params: dict[str, object] = {
+            "KeyConditionExpression": "PK = :pk",
+            "ExpressionAttributeValues": {":pk": partition_key},
+            "ConsistentRead": True,
+        }
+
+        while True:
+            response = table.query(**query_params)
+            yield from response.get("Items", [])
+
+            last_evaluated_key = response.get("LastEvaluatedKey")
+            if not last_evaluated_key:
+                break
+            query_params["ExclusiveStartKey"] = last_evaluated_key
+
+    def _apply_metric_delta_item(
+        self,
+        *,
+        source_table: DynamoDBMetricBatchTableProtocol | DynamoDBRevisionTableProtocol,
+        delta_item: dict[str, Any],
+    ) -> bool:
+        merged_count = self._apply_metric_delta_batch(
+            source_table=source_table,
+            delta_items=(delta_item,),
+        )
+        return merged_count == 1
+
+    def _apply_metric_delta_batch(
+        self,
+        *,
+        source_table: DynamoDBMetricBatchTableProtocol | DynamoDBRevisionTableProtocol,
+        delta_items: tuple[dict[str, Any], ...],
+    ) -> int:
+        existing_items = self._batch_get_metric_items(delta_items)
+        transaction_items: list[dict[str, Any]] = []
+        merged_count = 0
+        updated_at = utc_now_iso()
+
+        for delta_item in delta_items:
+            metric_key = (
+                str(delta_item["metric_pk"]),
+                str(delta_item["metric_sk"]),
+            )
+            existing_item = existing_items.get(metric_key)
+            if existing_item is not None:
+                merged_count += 1
+            merged_item = self._merge_metric_delta_item(delta_item, existing_item)
+            transaction_items.extend(
+                [
+                    {
+                        "Put": {
+                            "TableName": self.geo_job_metrics_table.name,
+                            "Item": merged_item,
+                        }
+                    },
+                    {
+                        "Update": {
+                            "TableName": source_table.name,
+                            "Key": {
+                                "PK": delta_item["PK"],
+                                "SK": delta_item["SK"],
+                            },
+                            "UpdateExpression": (
+                                "SET #status = :status, updated_at = :now"
+                            ),
+                            "ConditionExpression": "#status = :pending",
+                            "ExpressionAttributeNames": {"#status": "status"},
+                            "ExpressionAttributeValues": {
+                                ":status": "applied",
+                                ":pending": "pending",
+                                ":now": updated_at,
+                            },
+                        }
+                    },
+                ]
+            )
+
+        try:
+            self.geo_job_metrics_table.meta.client.transact_write_items(
+                TransactItems=transaction_items
+            )
+        except ClientError as error:
+            self.logger.debug(
+                "Failed DynamoDB metric batch transaction: error=%s "
+                "source_table=%s item_count=%s delta_items=%s "
+                "transaction_items=%s",
+                error.response.get("Error", {}),
+                source_table.name,
+                len(delta_items),
+                delta_items,
+                transaction_items,
+            )
+            raise
+        return merged_count
+
+    def _batch_get_metric_items(
+        self,
+        delta_items: tuple[dict[str, Any], ...],
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        table_name = self.geo_job_metrics_table.name
+        request_items: dict[str, Any] = {
+            table_name: {
+                "Keys": [
+                    {
+                        "PK": delta_item["metric_pk"],
+                        "SK": delta_item["metric_sk"],
+                    }
+                    for delta_item in delta_items
+                ],
+                "ConsistentRead": True,
+            }
+        }
+        existing_items: dict[tuple[str, str], dict[str, Any]] = {}
+
+        for attempt in range(BATCH_GET_MAX_ATTEMPTS):
+            response = self.geo_job_metrics_table.meta.client.batch_get_item(
+                RequestItems=request_items
+            )
+            for item in response.get("Responses", {}).get(table_name, []):
+                existing_items[(str(item["PK"]), str(item["SK"]))] = item
+
+            unprocessed_keys = response.get("UnprocessedKeys", {})
+            if not unprocessed_keys:
+                return existing_items
+
+            if attempt == BATCH_GET_MAX_ATTEMPTS - 1:
+                break
+
+            delay_seconds = BATCH_GET_BASE_DELAY_SECONDS * (2**attempt)
+            self.logger.debug(
+                "Retrying unprocessed DynamoDB metric keys: "
+                "attempt=%s delay_seconds=%.2f key_count=%s",
+                attempt + 2,
+                delay_seconds,
+                len(unprocessed_keys.get(table_name, {}).get("Keys", [])),
+            )
+            sleep(delay_seconds)
+            request_items = unprocessed_keys
+
+        raise RuntimeError(
+            "DynamoDB BatchGetItem did not process all metric keys after "
+            f"{BATCH_GET_MAX_ATTEMPTS} attempts"
+        )
+
+    def _merge_metric_delta_item(
+        self,
+        delta_item: dict[str, Any],
+        existing_item: dict[str, Any] | None,
+    ) -> dict[str, object]:
+        aggregate = metric_aggregate_from_item(existing_item)
+        aggregate.merge(metric_delta_from_item(delta_item))
+
+        item = {
+            "PK": delta_item["metric_pk"],
+            "SK": delta_item["metric_sk"],
+            "location_type": delta_item["location_type"],
+            "location_code": delta_item["location_code"],
+            "location_name": delta_item["location_name"],
+            "state_code": delta_item["state_code"],
+            "state_name": delta_item["state_name"],
+            "region_name": delta_item["region_name"],
+            "reference_month": delta_item["target_month"],
+            "family_code": delta_item["family_code"],
+            "family_title": delta_item["family_title"],
+            "admissions": aggregate.admissions,
+            "dismissals": aggregate.dismissals,
+            "net_balance": aggregate.net_balance,
+            "total_turnover": aggregate.total_turnover,
+            "salary_sum": aggregate.salary_sum.quantize(MONEY_QUANTIZER),
+            "salary_count": aggregate.salary_count,
+            "avg_salary": aggregate.avg_salary,
+            "GSI1_PK": (
+                f"MONTH#{delta_item['target_month']}#PROF#{delta_item['family_code']}"
+            ),
+            "GSI1_SK": (
+                f"NET#{aggregate.net_balance:+012d}"
+                f"#LOC#{delta_item['location_type']}{delta_item['location_code']}"
+            ),
+        }
+        return item
 
     def _download_files(
         self,
@@ -590,6 +1039,45 @@ def parse_decimal(value: str) -> Decimal:
         return Decimal(normalized)
     except InvalidOperation as exc:
         raise ValueError(f"Invalid decimal value: {value!r}") from exc
+
+
+def parse_decimal_value(value: object) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError(f"Invalid decimal value: {value!r}") from exc
+
+
+def metric_aggregate_from_item(item: dict[str, object] | None) -> MetricAggregate:
+    if item is None:
+        return MetricAggregate()
+
+    return MetricAggregate(
+        admissions=int(item.get("admissions", 0)),
+        dismissals=int(item.get("dismissals", 0)),
+        salary_sum=parse_decimal_value(item.get("salary_sum", "0")),
+        salary_count=int(item.get("salary_count", 0)),
+    )
+
+
+def metric_delta_from_item(item: dict[str, object]) -> MetricAggregate:
+    return MetricAggregate(
+        admissions=int(item["admissions_delta"]),
+        dismissals=int(item["dismissals_delta"]),
+        salary_sum=parse_decimal_value(item["salary_sum_delta"]),
+        salary_count=int(item["salary_count_delta"]),
+    )
+
+
+def is_conditional_check_failure(error: ClientError) -> bool:
+    error_code = error.response.get("Error", {}).get("Code")
+    return error_code == "ConditionalCheckFailedException"
+
+
+def utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 @contextmanager

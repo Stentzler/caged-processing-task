@@ -27,6 +27,18 @@ class Settings:
             "caged_geo_job_metrics",
         )
     )
+    METRIC_REVISIONS_TABLE_NAME: str = field(
+        default_factory=lambda: os.getenv(
+            "METRIC_REVISIONS_TABLE_NAME",
+            "caged_metric_revisions",
+        )
+    )
+    METRIC_BATCHES_TABLE_NAME: str = field(
+        default_factory=lambda: os.getenv(
+            "METRIC_BATCHES_TABLE_NAME",
+            "caged_metric_batches",
+        )
+    )
     CBO_LOOKUP_TABLE_NAME: str = field(
         default_factory=lambda: os.getenv(
             "CBO_LOOKUP_TABLE_NAME",
@@ -60,6 +72,12 @@ class Settings:
 
         if not self.GEO_JOB_METRICS_TABLE_NAME.strip():
             raise ValueError("GEO_JOB_METRICS_TABLE_NAME must be configured")
+
+        if not self.METRIC_REVISIONS_TABLE_NAME.strip():
+            raise ValueError("METRIC_REVISIONS_TABLE_NAME must be configured")
+
+        if not self.METRIC_BATCHES_TABLE_NAME.strip():
+            raise ValueError("METRIC_BATCHES_TABLE_NAME must be configured")
 
         if not self.CBO_LOOKUP_TABLE_NAME.strip():
             raise ValueError("CBO_LOOKUP_TABLE_NAME must be configured")

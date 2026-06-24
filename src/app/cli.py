@@ -40,6 +40,14 @@ def main() -> int:
         settings.GEO_JOB_METRICS_TABLE_NAME,
         dynamodb_settings,
     )
+    metric_revisions_table = get_dynamodb_table(
+        settings.METRIC_REVISIONS_TABLE_NAME,
+        dynamodb_settings,
+    )
+    metric_batches_table = get_dynamodb_table(
+        settings.METRIC_BATCHES_TABLE_NAME,
+        dynamodb_settings,
+    )
     cbo_lookup_table = get_dynamodb_table(
         settings.CBO_LOOKUP_TABLE_NAME,
         dynamodb_settings,
@@ -58,6 +66,8 @@ def main() -> int:
             processor=CagedProcessor(
                 s3_client=s3_client,
                 geo_job_metrics_table=geo_job_metrics_table,
+                metric_batches_table=metric_batches_table,
+                metric_revisions_table=metric_revisions_table,
                 cbo_lookup_table=cbo_lookup_table,
                 geo_lookup_table=geo_lookup_table,
                 logger=logger,
