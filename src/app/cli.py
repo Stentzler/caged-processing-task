@@ -40,6 +40,10 @@ def main() -> int:
         settings.GEO_JOB_METRICS_TABLE_NAME,
         dynamodb_settings,
     )
+    dataset_catalog_table = get_dynamodb_table(
+        settings.DATASET_CATALOG_TABLE_NAME,
+        dynamodb_settings,
+    )
     metric_revisions_table = get_dynamodb_table(
         settings.METRIC_REVISIONS_TABLE_NAME,
         dynamodb_settings,
@@ -59,21 +63,26 @@ def main() -> int:
 
     try:
         event = load_event(settings, s3_client)
+
+        processor = CagedProcessor(
+            s3_client=s3_client,
+            geo_job_metrics_table=geo_job_metrics_table,
+            metric_batches_table=metric_batches_table,
+            metric_revisions_table=metric_revisions_table,
+            cbo_lookup_table=cbo_lookup_table,
+            geo_lookup_table=geo_lookup_table,
+            logger=logger,
+        )
+
         service = ProcessingService(
             settings=settings,
             registry_table=registry_table,
             audit_table=audit_table,
-            processor=CagedProcessor(
-                s3_client=s3_client,
-                geo_job_metrics_table=geo_job_metrics_table,
-                metric_batches_table=metric_batches_table,
-                metric_revisions_table=metric_revisions_table,
-                cbo_lookup_table=cbo_lookup_table,
-                geo_lookup_table=geo_lookup_table,
-                logger=logger,
-            ),
+            dataset_catalog_table=dataset_catalog_table,
+            processor=processor,
             logger=logger,
         )
+
         result = service.execute(event)
     except Exception:
         logger.exception("CAGED processing task failed")

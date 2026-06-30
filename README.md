@@ -42,6 +42,7 @@ REGISTRY_TABLE_NAME=downloaded_files_registry
 REGISTRY_ID=ftp_tree
 PROCESS_AUDIT_TABLE_NAME=caged_processes
 GEO_JOB_METRICS_TABLE_NAME=caged_geo_job_metrics
+DATASET_CATALOG_TABLE_NAME=caged_dataset_catalog
 METRIC_BATCHES_TABLE_NAME=caged_metric_batches
 METRIC_REVISIONS_TABLE_NAME=caged_metric_revisions
 CBO_LOOKUP_TABLE_NAME=caged_cbo_lookup
@@ -60,6 +61,7 @@ LOG_LEVEL=INFO
 - Parse complete monthly `CAGEDMOV`, `CAGEDFOR`, and `CAGEDEXC` groups.
 - Store and apply current-month metrics through `caged_metric_batches`.
 - Write final city/state metrics by CBO family into `caged_geo_job_metrics`.
+- Add each successfully processed month to `caged_dataset_catalog`.
 - Write `PROF#ALL` total metrics for each city/state/month.
 - Store and apply historical-month corrections through `caged_metric_revisions`.
 - Update the existing `downloaded_files_registry` entry with:

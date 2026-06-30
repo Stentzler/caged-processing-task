@@ -13,6 +13,8 @@ from app.settings import Settings
 
 FINISHED_PROCESSING_STATUS = "finished"
 TERMINAL_PROCESSING_STATUSES = frozenset({FINISHED_PROCESSING_STATUS})
+CAGED_GEO_JOB_METRICS_DATASET_ID = "CAGED_GEO_JOB_METRICS"
+DATASET_METADATA_SORT_KEY = "METADATA"
 
 
 class RegistryTableProtocol(Protocol):
@@ -23,6 +25,12 @@ class RegistryTableProtocol(Protocol):
 
 class AuditTableProtocol(Protocol):
     def put_item(self, **kwargs: object) -> dict[str, Any]: ...
+
+
+class DatasetCatalogTableProtocol(Protocol):
+    def get_item(self, **kwargs: object) -> dict[str, Any]: ...
+
+    def update_item(self, **kwargs: object) -> dict[str, Any]: ...
 
 
 class LoggerProtocol(Protocol):
@@ -58,6 +66,7 @@ class ProcessingService:
         settings: Settings,
         registry_table: RegistryTableProtocol,
         audit_table: AuditTableProtocol,
+        dataset_catalog_table: DatasetCatalogTableProtocol,
         processor: ProcessingEngineProtocol,
         logger: LoggerProtocol,
         timestamp_factory: Callable[[], str] | None = None,
@@ -66,6 +75,7 @@ class ProcessingService:
         self.settings = settings
         self.registry_table = registry_table
         self.audit_table = audit_table
+        self.dataset_catalog_table = dataset_catalog_table
         self.processor = processor
         self.logger = logger
         self.timestamp_factory = timestamp_factory or current_utc_timestamp
@@ -125,6 +135,7 @@ class ProcessingService:
         self._ensure_month_was_not_processed(month_files, registry_entries)
 
         processor_result = self.processor.process(month_files)
+        self._update_dataset_catalog(month_files.reference_month)
         finished_files = [
             replace(file_result, processing_status=FINISHED_PROCESSING_STATUS)
             for file_result in month_files.files
@@ -298,6 +309,52 @@ class ProcessingService:
             )
             item["missing_file_types"] = missing_file_types
         self.audit_table.put_item(Item=item)
+
+    def _update_dataset_catalog(self, reference_month: str) -> None:
+        key = {
+            "PK": f"DATASET#{CAGED_GEO_JOB_METRICS_DATASET_ID}",
+            "SK": DATASET_METADATA_SORT_KEY,
+        }
+        response = self.dataset_catalog_table.get_item(
+            Key=key,
+            ConsistentRead=True,
+        )
+        item = response.get("Item")
+        if not isinstance(item, dict):
+            item = {}
+
+        available_months = item.get("available_months")
+        if isinstance(available_months, list):
+            updated_months = list(available_months)
+        else:
+            updated_months = []
+
+        if reference_month not in {str(month) for month in updated_months}:
+            updated_months.append(reference_month)
+
+        latest_available_month = str(item.get("latest_available_month") or "")
+        if reference_month > latest_available_month:
+            latest_available_month = reference_month
+
+        self.dataset_catalog_table.update_item(
+            Key=key,
+            UpdateExpression=(
+                "SET "
+                "#available_months = :available_months, "
+                "#latest_available_month = :latest_available_month, "
+                "#updated_at = :updated_at"
+            ),
+            ExpressionAttributeNames={
+                "#available_months": "available_months",
+                "#latest_available_month": "latest_available_month",
+                "#updated_at": "updated_at",
+            },
+            ExpressionAttributeValues={
+                ":available_months": updated_months,
+                ":latest_available_month": latest_available_month,
+                ":updated_at": self.timestamp_factory(),
+            },
+        )
 
 
 def current_utc_timestamp() -> str:
