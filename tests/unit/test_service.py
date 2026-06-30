@@ -55,6 +55,21 @@ class FakeAuditTable:
 
 
 @dataclass
+class FakeDatasetCatalogTable:
+    item: dict[str, Any] = field(default_factory=lambda: {"Item": {}})
+    get_calls: list[dict[str, object]] = field(default_factory=list)
+    update_calls: list[dict[str, object]] = field(default_factory=list)
+
+    def get_item(self, **kwargs: object) -> dict[str, Any]:
+        self.get_calls.append(kwargs)
+        return self.item
+
+    def update_item(self, **kwargs: object) -> dict[str, Any]:
+        self.update_calls.append(kwargs)
+        return {}
+
+
+@dataclass
 class FakeLogger:
     messages: list[str] = field(default_factory=list)
 
@@ -82,7 +97,14 @@ class FakeProcessor:
 
 def build_service(
     processor: FakeProcessor | None = None,
-) -> tuple[ProcessingService, FakeRegistryTable, FakeAuditTable, FakeProcessor]:
+    dataset_catalog_table: FakeDatasetCatalogTable | None = None,
+) -> tuple[
+    ProcessingService,
+    FakeRegistryTable,
+    FakeAuditTable,
+    FakeDatasetCatalogTable,
+    FakeProcessor,
+]:
     settings = Settings(
         REGISTRY_TABLE_NAME="downloaded_files_registry",
         REGISTRY_ID="ftp_tree",
@@ -91,17 +113,25 @@ def build_service(
     )
     registry_table = FakeRegistryTable()
     audit_table = FakeAuditTable()
+    effective_dataset_catalog_table = dataset_catalog_table or FakeDatasetCatalogTable()
     effective_processor = processor or FakeProcessor()
     service = ProcessingService(
         settings=settings,
         registry_table=registry_table,
         audit_table=audit_table,
+        dataset_catalog_table=effective_dataset_catalog_table,
         processor=effective_processor,
         logger=FakeLogger(),
         timestamp_factory=lambda: "2026-06-15T12:00:00+00:00",
         uuid_factory=SequentialUUIDFactory(),
     )
-    return service, registry_table, audit_table, effective_processor
+    return (
+        service,
+        registry_table,
+        audit_table,
+        effective_dataset_catalog_table,
+        effective_processor,
+    )
 
 
 @dataclass
@@ -114,7 +144,7 @@ class SequentialUUIDFactory:
 
 
 def test_execute_marks_processing_and_writes_audit_records() -> None:
-    service, registry_table, audit_table, processor = build_service()
+    service, registry_table, audit_table, catalog_table, processor = build_service()
 
     response = service.execute(VALID_JOB)
 
@@ -168,10 +198,43 @@ def test_execute_marks_processing_and_writes_audit_records() -> None:
     assert len(audit_table.put_calls) == 3
     assert audit_table.put_calls[0]["Item"]["reference_month"] == "202604"
     assert audit_table.put_calls[0]["Item"]["process_id"] == "uuid-1"
+    assert catalog_table.get_calls == [
+        {
+            "Key": {
+                "PK": "DATASET#CAGED_GEO_JOB_METRICS",
+                "SK": "METADATA",
+            },
+            "ConsistentRead": True,
+        }
+    ]
+    assert catalog_table.update_calls == [
+        {
+            "Key": {
+                "PK": "DATASET#CAGED_GEO_JOB_METRICS",
+                "SK": "METADATA",
+            },
+            "UpdateExpression": (
+                "SET "
+                "#available_months = :available_months, "
+                "#latest_available_month = :latest_available_month, "
+                "#updated_at = :updated_at"
+            ),
+            "ExpressionAttributeNames": {
+                "#available_months": "available_months",
+                "#latest_available_month": "latest_available_month",
+                "#updated_at": "updated_at",
+            },
+            "ExpressionAttributeValues": {
+                ":available_months": ["202604"],
+                ":latest_available_month": "202604",
+                ":updated_at": "2026-06-15T12:00:00+00:00",
+            },
+        }
+    ]
 
 
 def test_execute_marks_incomplete_month_as_error_and_continues() -> None:
-    service, registry_table, audit_table, processor = build_service()
+    service, registry_table, audit_table, catalog_table, processor = build_service()
     event = {
         "status": "COMPLETED",
         "files": [
@@ -230,19 +293,24 @@ def test_execute_marks_incomplete_month_as_error_and_continues() -> None:
     ] == ["error", "error", "finished", "finished", "finished"]
     assert audit_table.put_calls[0]["Item"]["status"] == "error"
     assert audit_table.put_calls[0]["Item"]["missing_file_types"] == ["CAGEDMOV"]
+    assert len(catalog_table.update_calls) == 1
+    assert catalog_table.update_calls[0]["ExpressionAttributeValues"][
+        ":available_months"
+    ] == ["202605"]
 
 
 def test_execute_raises_when_processor_fails() -> None:
-    service, _, _, _ = build_service(
+    service, _, _, catalog_table, _ = build_service(
         processor=FakeProcessor(error=RuntimeError("parse error"))
     )
 
     with pytest.raises(ProcessingFailedError):
         service.execute(VALID_JOB)
+    assert catalog_table.update_calls == []
 
 
 def test_execute_raises_when_registry_entry_is_already_processed() -> None:
-    service, registry_table, audit_table, processor = build_service()
+    service, registry_table, audit_table, catalog_table, processor = build_service()
     registry_table.item["Item"]["tree"]["2026"]["202604"]["CAGEDMOV202604.7z"][
         "processing_status"
     ] = "finished"
@@ -252,11 +320,75 @@ def test_execute_raises_when_registry_entry_is_already_processed() -> None:
 
     assert processor.months == []
     assert audit_table.put_calls == []
+    assert catalog_table.update_calls == []
 
 
 def test_execute_raises_when_registry_file_entry_is_missing() -> None:
-    service, registry_table, _, _ = build_service()
+    service, registry_table, _, _, _ = build_service()
     del registry_table.item["Item"]["tree"]["2026"]["202604"]["CAGEDMOV202604.7z"]
 
     with pytest.raises(ProcessingFailedError, match="Missing registry file entry"):
         service.execute(VALID_JOB)
+
+
+def test_execute_appends_new_available_month_and_updates_latest_month() -> None:
+    catalog_table = FakeDatasetCatalogTable(
+        item={
+            "Item": {
+                "available_months": ["202501", "202512"],
+                "latest_available_month": "202512",
+                "description": "kept by DynamoDB update",
+            }
+        }
+    )
+    service, _, _, catalog_table, _ = build_service(dataset_catalog_table=catalog_table)
+
+    service.execute(VALID_JOB)
+
+    assert catalog_table.update_calls[0]["ExpressionAttributeValues"] == {
+        ":available_months": ["202501", "202512", "202604"],
+        ":latest_available_month": "202604",
+        ":updated_at": "2026-06-15T12:00:00+00:00",
+    }
+
+
+def test_execute_keeps_latest_month_when_processed_month_is_older() -> None:
+    catalog_table = FakeDatasetCatalogTable(
+        item={
+            "Item": {
+                "available_months": ["202501", "202701"],
+                "latest_available_month": "202701",
+            }
+        }
+    )
+    service, _, _, catalog_table, _ = build_service(dataset_catalog_table=catalog_table)
+
+    service.execute(VALID_JOB)
+
+    assert catalog_table.update_calls[0]["ExpressionAttributeValues"][
+        ":available_months"
+    ] == ["202501", "202701", "202604"]
+    assert (
+        catalog_table.update_calls[0]["ExpressionAttributeValues"][
+            ":latest_available_month"
+        ]
+        == "202701"
+    )
+
+
+def test_execute_does_not_duplicate_existing_available_month() -> None:
+    catalog_table = FakeDatasetCatalogTable(
+        item={
+            "Item": {
+                "available_months": ["202501", "202604"],
+                "latest_available_month": "202604",
+            }
+        }
+    )
+    service, _, _, catalog_table, _ = build_service(dataset_catalog_table=catalog_table)
+
+    service.execute(VALID_JOB)
+
+    assert catalog_table.update_calls[0]["ExpressionAttributeValues"][
+        ":available_months"
+    ] == ["202501", "202604"]

@@ -27,6 +27,12 @@ class Settings:
             "caged_geo_job_metrics",
         )
     )
+    DATASET_CATALOG_TABLE_NAME: str = field(
+        default_factory=lambda: os.getenv(
+            "DATASET_CATALOG_TABLE_NAME",
+            "caged_dataset_catalog",
+        )
+    )
     METRIC_REVISIONS_TABLE_NAME: str = field(
         default_factory=lambda: os.getenv(
             "METRIC_REVISIONS_TABLE_NAME",
@@ -72,6 +78,9 @@ class Settings:
 
         if not self.GEO_JOB_METRICS_TABLE_NAME.strip():
             raise ValueError("GEO_JOB_METRICS_TABLE_NAME must be configured")
+
+        if not self.DATASET_CATALOG_TABLE_NAME.strip():
+            raise ValueError("DATASET_CATALOG_TABLE_NAME must be configured")
 
         if not self.METRIC_REVISIONS_TABLE_NAME.strip():
             raise ValueError("METRIC_REVISIONS_TABLE_NAME must be configured")
